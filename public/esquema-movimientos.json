@@ -1,0 +1,232 @@
+{
+  "esquema": {
+    "tipo_esquema": "jerarquico",
+    "tema_central": "MOVIMIENTOS",
+    "descripcion_corta": "Clasificación de los movimientos del cuerpo humano según su naturaleza: reflejos, involuntarios y voluntarios.",
+    "nodos": [
+      {
+        "id": 1,
+        "texto": "MOVIMIENTOS",
+        "nivel": 1,
+        "nodeType": "root"
+      },
+      {
+        "id": 2,
+        "texto": "REFLEJOS",
+        "nivel": 2,
+        "parent_id": 1,
+        "nodeType": "category"
+      },
+      {
+        "id": 3,
+        "texto": "INVOLUNTARIOS",
+        "nivel": 2,
+        "parent_id": 1,
+        "nodeType": "category"
+      },
+      {
+        "id": 4,
+        "texto": "VOLUNTARIOS",
+        "nivel": 2,
+        "parent_id": 1,
+        "nodeType": "category"
+      },
+      {
+        "id": 5,
+        "texto": "Son los más sencillos aunque intervienen muchos músculos",
+        "nivel": 3,
+        "parent_id": 2,
+        "nodeType": "content"
+      },
+      {
+        "id": 6,
+        "texto": "Son más complicados",
+        "nivel": 3,
+        "parent_id": 3,
+        "nodeType": "content"
+      },
+      {
+        "id": 7,
+        "texto": "Los más complicados",
+        "nivel": 3,
+        "parent_id": 4,
+        "nodeType": "content"
+      },
+      {
+        "id": 8,
+        "texto": "Mover la pierna al dar un pequeño golpe bajo la rótula en la rodilla",
+        "nivel": 4,
+        "parent_id": 5,
+        "nodeType": "example"
+      },
+      {
+        "id": 9,
+        "texto": "Asociados",
+        "nivel": 4,
+        "parent_id": 6,
+        "nodeType": "category"
+      },
+      {
+        "id": 10,
+        "texto": "Automáticos",
+        "nivel": 4,
+        "parent_id": 6,
+        "nodeType": "category"
+      },
+      {
+        "id": 11,
+        "texto": "fase de latencia entre estímulo y respuesta",
+        "nivel": 4,
+        "parent_id": 7,
+        "nodeType": "content"
+      },
+      {
+        "id": 12,
+        "texto": "los que acompañan a los voluntarios y protegen la personalidad motriz",
+        "nivel": 5,
+        "parent_id": 9,
+        "nodeType": "content"
+      },
+      {
+        "id": 13,
+        "texto": "Movimientos reactivos, de defensa, de expresión emocional, etc",
+        "nivel": 5,
+        "parent_id": 10,
+        "nodeType": "content"
+      },
+      {
+        "id": 14,
+        "texto": "infinitas formas son diferentes de un individuo a otro",
+        "nivel": 5,
+        "parent_id": 11,
+        "nodeType": "content"
+      },
+      {
+        "id": 15,
+        "texto": "balanceo de brazos al caminar para mantener el equilibrio",
+        "nivel": 6,
+        "parent_id": 12,
+        "nodeType": "example"
+      },
+      {
+        "id": 16,
+        "texto": "primarios",
+        "nivel": 6,
+        "parent_id": 13,
+        "nodeType": "category"
+      },
+      {
+        "id": 17,
+        "texto": "secundarios",
+        "nivel": 6,
+        "parent_id": 13,
+        "nodeType": "category"
+      },
+      {
+        "id": 18,
+        "texto": "bailar, nadar, correr",
+        "nivel": 6,
+        "parent_id": 14,
+        "nodeType": "example"
+      },
+      {
+        "id": 19,
+        "texto": "deglutir, gritar",
+        "nivel": 7,
+        "parent_id": 16,
+        "nodeType": "example"
+      },
+      {
+        "id": 20,
+        "texto": "mantener equilibrio al andar en bici, mantener ritmo al tocar piano",
+        "nivel": 7,
+        "parent_id": 17,
+        "nodeType": "example"
+      }
+    ],
+    "conexiones_flujo": [
+      {
+        "from": 5,
+        "to": 8,
+        "etiqueta": "ejemplo",
+        "tipo": "dashed"
+      },
+      {
+        "from": 6,
+        "to": 9,
+        "etiqueta": "dos tipos",
+        "tipo": "dashed"
+      },
+      {
+        "from": 6,
+        "to": 10,
+        "etiqueta": "dos tipos",
+        "tipo": "dashed"
+      },
+      {
+        "from": 7,
+        "to": 11,
+        "etiqueta": "tienen",
+        "tipo": "dashed"
+      },
+      {
+        "from": 9,
+        "to": 12,
+        "etiqueta": "son",
+        "tipo": "dashed"
+      },
+      {
+        "from": 10,
+        "to": 13,
+        "etiqueta": "son",
+        "tipo": "dashed"
+      },
+      {
+        "from": 11,
+        "to": 14,
+        "etiqueta": "presentan",
+        "tipo": "dashed"
+      },
+      {
+        "from": 12,
+        "to": 15,
+        "etiqueta": "ejemplo",
+        "tipo": "dashed"
+      },
+      {
+        "from": 13,
+        "to": 16,
+        "etiqueta": "primarios",
+        "tipo": "dashed"
+      },
+      {
+        "from": 13,
+        "to": 17,
+        "etiqueta": "secundarios",
+        "tipo": "dashed"
+      },
+      {
+        "from": 14,
+        "to": 18,
+        "etiqueta": "ejemplo",
+        "tipo": "dashed"
+      }
+    ],
+    "metacognicion": {
+      "preguntas_autoevaluacion": [
+        "¿Cuál es la diferencia principal entre movimientos reflejos y voluntarios?",
+        "¿Qué son los movimientos asociados y cuál es su función?",
+        "¿Por qué los movimientos voluntarios presentan infinitas formas diferentes?",
+        "¿Puedes dar un ejemplo de movimiento automático secundario?"
+      ],
+      "conceptos_clave_examen": [
+        "Movimientos reflejos",
+        "Movimientos involuntarios",
+        "Movimientos voluntarios",
+        "Fase de latencia",
+        "Movimientos asociados",
+        "Movimientos automáticos"
+      ]
+    }
+  }
+}
