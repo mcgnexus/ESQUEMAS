@@ -20,13 +20,18 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import dagre from "dagre";
-import { ArrowLeft, BookOpen, Download, Edit2, LayoutPanelTop, Move, Save, Scan } from "lucide-react";
-import { domToCanvas } from "modern-screenshot";
+import { ArrowLeft, BookOpen, Download, Edit2, LayoutPanelTop, Move, Save, Scan, ZoomIn, ZoomOut } from "lucide-react";
+import { domToCanvas, domToPng } from "modern-screenshot";
 import jsPDF from "jspdf";
+import mermaid from "mermaid";
 
 type NodeType = "root" | "category" | "content" | "example";
 type Orientation = "vertical" | "horizontal";
 type ZoomPreset = "fit" | 0.25 | 0.5 | 0.75 | 1;
+type RenderEngine = "mermaid" | "flow";
+type MermaidDiagramType = "flowchart" | "mindmap";
+type MermaidTheme = "default" | "neutral" | "dark" | "forest";
+type MermaidCurve = "basis" | "linear" | "stepBefore" | "stepAfter" | "monotoneX";
 
 const A4 = {
   vertical: { width: 794, height: 1123 },
@@ -34,6 +39,37 @@ const A4 = {
 };
 const MARGIN_MM = 10;
 const MARGIN_PX = Math.round((96 / 25.4) * MARGIN_MM);
+
+const sanitizeSvgForCanvas = (rawSvg: string): string => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(rawSvg, "image/svg+xml");
+  const svg = doc.documentElement;
+
+  if (!svg.getAttribute("xmlns")) {
+    svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+
+  doc.querySelectorAll("script, iframe, object, embed").forEach((el) => el.remove());
+  doc.querySelectorAll("image").forEach((el) => {
+    const href = el.getAttribute("href") || el.getAttribute("xlink:href") || "";
+    if (href && !href.startsWith("data:")) el.remove();
+  });
+
+  doc.querySelectorAll("*").forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.value.includes("url(")) {
+        const safeValue = attr.value.replace(/url\((['"]?)(?!#)[^)]+\1\)/g, "none");
+        el.setAttribute(attr.name, safeValue);
+      }
+    }
+  });
+
+  doc.querySelectorAll("style").forEach((styleEl) => {
+    styleEl.textContent = (styleEl.textContent || "").replace(/@import[^;]+;/g, "");
+  });
+
+  return new XMLSerializer().serializeToString(doc);
+};
 
 type StudyNodeData = {
   label: string;
@@ -405,6 +441,168 @@ const FlowCanvasComponent = ({ schema, layoutType, isEdit, zoomPreset, fitTick, 
 };
 const FlowCanvas = forwardRef(FlowCanvasComponent);
 
+const MermaidCanvas = ({
+  schema,
+  orientation,
+  labelMap,
+  diagramType,
+  theme,
+  curve,
+  nodeSpacing,
+  rankSpacing,
+  onSvgChange,
+}: {
+  schema: unknown;
+  orientation: Orientation;
+  labelMap: Record<string, string>;
+  diagramType: MermaidDiagramType;
+  theme: MermaidTheme;
+  curve: MermaidCurve;
+  nodeSpacing: number;
+  rankSpacing: number;
+  onSvgChange?: (svg: string) => void;
+}) => {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const buildMermaidDefinition = useCallback(() => {
+    const s = schema as {
+      nodos?: Array<{ id: string | number; texto: string; parent_id?: string | number | null; nodeType?: NodeType }>;
+      conexiones_flujo?: Array<{ from: string | number; to: string | number; etiqueta?: string; tipo?: "solid" | "dashed" }>;
+    };
+    const nodes = Array.isArray(s?.nodos) ? s.nodos : [];
+    if (!nodes.length) return "flowchart TB\nA[\"Sin datos\"]";
+
+    const dir = orientation === "horizontal" ? "LR" : "TB";
+    const escapeFlow = (v: string) =>
+      v
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, " ")
+        .replace(/\[/g, "(")
+        .replace(/\]/g, ")");
+    const escapeMindmap = (v: string) =>
+      v
+        .replace(/\n/g, " ")
+        .replace(/"/g, "'")
+        .replace(/\[/g, "(")
+        .replace(/\]/g, ")")
+        .replace(/\s+/g, " ")
+        .trim();
+    const idMap = new Map<string, string>();
+    const lines: string[] = [];
+
+    if (diagramType === "mindmap") {
+      lines.push("mindmap");
+      const byParent = new Map<string, Array<{ id: string | number; texto: string; parent_id?: string | number | null }>>();
+      const roots: Array<{ id: string | number; texto: string; parent_id?: string | number | null }> = [];
+      let seq = 0;
+      const nodeRef = () => `MM${++seq}`;
+      nodes.forEach((n) => {
+        if (n.parent_id == null) {
+          roots.push(n);
+          return;
+        }
+        const key = String(n.parent_id);
+        const list = byParent.get(key) || [];
+        list.push(n);
+        byParent.set(key, list);
+      });
+
+      const buildTree = (node: { id: string | number; texto: string }, depth: number) => {
+        const pad = "  ".repeat(depth);
+        const label = escapeMindmap(labelMap[String(node.id)] ?? node.texto ?? "");
+        lines.push(`${pad}${nodeRef()}["${label}"]`);
+        const children = byParent.get(String(node.id)) || [];
+        children.forEach((child) => buildTree(child, depth + 1));
+      };
+
+      if (roots.length === 1) {
+        lines.push(`  root((${escapeMindmap(labelMap[String(roots[0].id)] ?? roots[0].texto ?? "Tema")}))`);
+        const children = byParent.get(String(roots[0].id)) || [];
+        children.forEach((child) => buildTree(child, 2));
+      } else {
+        lines.push(`  root((${escapeMindmap((schema as { tema_central?: string })?.tema_central || "Esquema")}))`);
+        roots.forEach((r) => buildTree(r, 2));
+      }
+      return lines.join("\n");
+    }
+
+    lines.push(`flowchart ${dir}`);
+
+    nodes.forEach((n, idx) => {
+      const id = `N${idx + 1}`;
+      idMap.set(String(n.id), id);
+      const label = labelMap[String(n.id)] ?? n.texto ?? "";
+      lines.push(`${id}["${escapeFlow(label)}"]`);
+    });
+
+    const classMap: Record<NodeType, string[]> = { root: [], category: [], content: [], example: [] };
+    nodes.forEach((n) => {
+      const type = (n.nodeType || "content") as NodeType;
+      const mermaidId = idMap.get(String(n.id));
+      if (mermaidId && classMap[type]) classMap[type].push(mermaidId);
+      if (n.parent_id != null) {
+        const parent = idMap.get(String(n.parent_id));
+        if (parent && mermaidId) lines.push(`${parent} --> ${mermaidId}`);
+      }
+    });
+
+    const flow = Array.isArray(s?.conexiones_flujo) ? s.conexiones_flujo : [];
+    flow.forEach((e) => {
+      const from = idMap.get(String(e.from));
+      const to = idMap.get(String(e.to));
+      if (!from || !to) return;
+      const label = e.etiqueta ? `|${escapeFlow(e.etiqueta)}|` : "";
+      lines.push(e.tipo === "dashed" ? `${from} -.${label}.- ${to}` : `${from} --${label}--> ${to}`);
+    });
+
+    lines.push("classDef root fill:#FFC107,stroke:#FF6F00,stroke-width:3px,color:#000;");
+    lines.push("classDef category fill:#ffffff,stroke:#D32F2F,stroke-width:2px,color:#B91C1C;");
+    lines.push("classDef content fill:#E3F2FD,stroke:#D32F2F,stroke-width:2px,color:#1F2937;");
+    lines.push("classDef example fill:#F5F5F5,stroke:#D32F2F,stroke-width:2px,color:#111827;");
+    (Object.keys(classMap) as NodeType[]).forEach((k) => {
+      if (classMap[k].length) lines.push(`class ${classMap[k].join(",")} ${k};`);
+    });
+
+    return lines.join("\n");
+  }, [schema, orientation, labelMap, diagramType]);
+
+  useEffect(() => {
+    let mounted = true;
+    const render = async () => {
+      if (!hostRef.current) return;
+      setError(null);
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "loose",
+          theme,
+          flowchart: { useMaxWidth: true, curve, nodeSpacing, rankSpacing },
+        });
+        const id = `mermaid-${Date.now()}`;
+        const def = buildMermaidDefinition();
+        const { svg } = await mermaid.render(id, def);
+        if (!mounted || !hostRef.current) return;
+        hostRef.current.innerHTML = svg;
+        onSvgChange?.(svg);
+      } catch (e) {
+        console.error("Mermaid render error:", e);
+        if (mounted) setError("No se pudo renderizar Mermaid.");
+      }
+    };
+    void render();
+    return () => {
+      mounted = false;
+    };
+  }, [buildMermaidDefinition, theme, curve, nodeSpacing, rankSpacing, onSvgChange]);
+
+  return (
+    <div className="w-full h-full overflow-auto p-6 bg-white">
+      {error ? <div className="text-sm text-red-700 font-semibold">{error}</div> : <div ref={hostRef} className="mermaid-host" />}
+    </div>
+  );
+};
+
 const VisualSchema = ({ schema, onBack, onSave }: VisualSchemaProps) => {
   const flowRef = useRef<FlowHandle>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -420,15 +618,46 @@ const VisualSchema = ({ schema, onBack, onSave }: VisualSchemaProps) => {
     return "jerarquico";
   });
   const [isEdit, setIsEdit] = useState(false);
+  const [renderEngine, setRenderEngine] = useState<RenderEngine>("mermaid");
+  const [mermaidDiagramType, setMermaidDiagramType] = useState<MermaidDiagramType>("flowchart");
+  const [mermaidTheme, setMermaidTheme] = useState<MermaidTheme>("default");
+  const [mermaidCurve, setMermaidCurve] = useState<MermaidCurve>("basis");
+  const [mermaidNodeSpacing, setMermaidNodeSpacing] = useState(45);
+  const [mermaidRankSpacing, setMermaidRankSpacing] = useState(60);
+  const [mermaidSvg, setMermaidSvg] = useState("");
+  const [isPrintMode, setIsPrintMode] = useState(false);
   const [orientation, setOrientation] = useState<Orientation>("vertical");
   const [orientationMode, setOrientationMode] = useState<"auto" | "manual">("auto");
   const [zoomPreset, setZoomPreset] = useState<ZoomPreset>("fit");
   const [fitTick, setFitTick] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [viewportScale, setViewportScale] = useState(1);
+  const [manualZoom, setManualZoom] = useState(1);
+  const [isMermaidLabelEditorOpen, setIsMermaidLabelEditorOpen] = useState(false);
+  const [mermaidLabelMap, setMermaidLabelMap] = useState<Record<string, string>>({});
 
   const title = (schema as { tema_central?: string } | null | undefined)?.tema_central;
   const sheet = A4[orientation];
+
+  const schemaNodesForMermaid = useCallback(() => {
+    const s = schema as {
+      nodos?: Array<{ id: string | number; texto: string; parent_id?: string | number | null; position?: { x: number; y: number }; nodeType?: NodeType; estilo?: { fontSize?: number; textAlign?: "left" | "center" | "right"; textColor?: string; fontWeight?: "normal" | "bold"; lineHeight?: number; nodeBgColor?: string } }>;
+      conexiones_flujo?: Array<{ from: string | number; to: string | number; etiqueta?: string; tipo?: "solid" | "dashed" }>;
+    };
+    return {
+      nodes: Array.isArray(s?.nodos) ? s.nodos : [],
+      flows: Array.isArray(s?.conexiones_flujo) ? s.conexiones_flujo : [],
+    };
+  }, [schema]);
+
+  useEffect(() => {
+    const { nodes } = schemaNodesForMermaid();
+    const nextMap: Record<string, string> = {};
+    nodes.forEach((n) => {
+      nextMap[String(n.id)] = n.texto || "";
+    });
+    setMermaidLabelMap(nextMap);
+  }, [schemaNodesForMermaid]);
 
   const onNodesReady = useCallback((nodes: Node[]) => {
     if (orientationMode !== "auto") return;
@@ -471,25 +700,136 @@ const VisualSchema = ({ schema, onBack, onSave }: VisualSchemaProps) => {
     }
   }, [orientation]);
 
+  const handleSave = useCallback(() => {
+    if (renderEngine === "mermaid") {
+      const { nodes, flows } = schemaNodesForMermaid();
+      if (!nodes.length) return;
+      const flowNodes: Node[] = nodes.map((n) => ({
+        id: String(n.id),
+        type: "studyNode",
+        position: n.position || { x: 0, y: 0 },
+        data: {
+          label: mermaidLabelMap[String(n.id)] ?? n.texto ?? "",
+          nodeType: n.nodeType,
+          fontSize: n.estilo?.fontSize,
+          textAlign: n.estilo?.textAlign,
+          textColor: n.estilo?.textColor,
+          fontWeight: n.estilo?.fontWeight,
+          lineHeight: n.estilo?.lineHeight,
+          nodeBgColor: n.estilo?.nodeBgColor,
+        },
+      }));
+      const parentEdges: Edge[] = nodes
+        .filter((n) => n.parent_id != null)
+        .map((n) => ({
+          id: `e-${n.parent_id}-${n.id}`,
+          source: String(n.parent_id),
+          target: String(n.id),
+        }));
+      const flowEdges: Edge[] = flows.map((f, idx) => ({
+        id: `f-${idx}`,
+        source: String(f.from),
+        target: String(f.to),
+        label: f.etiqueta,
+        style: { strokeDasharray: f.tipo === "dashed" ? "6,4" : "none" },
+      }));
+      onSave(flowNodes, [...parentEdges, ...flowEdges]);
+      return;
+    }
+    const v = flowRef.current?.get();
+    if (v) onSave(v.nodes, v.edges);
+  }, [renderEngine, onSave, schemaNodesForMermaid, mermaidLabelMap]);
+
+  const handleMermaidA4Fit = useCallback(() => {
+    setOrientationMode("auto");
+    setManualZoom(1);
+    setFitTick((v) => v + 1);
+  }, []);
+
+  const handleViewportWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (renderEngine !== "mermaid") return;
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.08 : 0.92;
+    setManualZoom((prev) => {
+      const next = prev * factor;
+      return Math.min(2.5, Math.max(0.5, Number(next.toFixed(3))));
+    });
+  }, [renderEngine]);
+
+  const effectiveScale = viewportScale * manualZoom;
+  const zoomMermaidIn = useCallback(() => setManualZoom((prev) => Math.min(2.5, Number((prev * 1.1).toFixed(3)))), []);
+  const zoomMermaidOut = useCallback(() => setManualZoom((prev) => Math.max(0.5, Number((prev * 0.9).toFixed(3)))), []);
+
+  const exportMermaidSvg = useCallback(() => {
+    if (!mermaidSvg) {
+      alert("No hay SVG Mermaid disponible para exportar.");
+      return;
+    }
+    const blob = new Blob([mermaidSvg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `esquema-mermaid-${Date.now()}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [mermaidSvg]);
+
+    const exportMermaidPng = useCallback(async () => {
+    // Buscar el contenedor específico de Mermaid para exportar el diagrama completo
+    // en lugar de la vista previa A4 que podría tener scroll/recorte.
+    const mermaidContainer = exportRef.current?.querySelector(".mermaid-host");
+    const elementToExport = mermaidContainer || exportRef.current;
+
+    if (!elementToExport) {
+      alert("No hay elemento para exportar.");
+      return;
+    }
+
+    setExporting(true);
+    try {
+      // Aumentar escala para mejor calidad y asegurar fondo blanco
+      const scale = 3;
+      const dataUrl = await domToPng(elementToExport as HTMLElement, {
+        scale,
+        backgroundColor: "#ffffff",
+        style: {
+          transform: "none", // Evitar transformaciones que puedan afectar
+        },
+      });
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `esquema-mermaid-${Date.now()}.png`;
+      a.click();
+    } catch (e) {
+      console.error("Mermaid PNG export error:", e);
+      alert("No se pudo exportar PNG.");
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const cmd = e.ctrlKey || e.metaKey;
       const tag = (e.target as HTMLElement)?.tagName.toLowerCase();
       if (e.key === "Escape") onBack();
       if (!cmd) return;
-      if (e.key.toLowerCase() === "s") { e.preventDefault(); const v = flowRef.current?.get(); if (v) onSave(v.nodes, v.edges); }
+      if (e.key.toLowerCase() === "s") { e.preventDefault(); handleSave(); }
       if (e.key.toLowerCase() === "p") { e.preventDefault(); void exportPdf(); }
       if (tag === "input" || tag === "textarea") return;
-      if (e.key === "0") { e.preventDefault(); setZoomPreset("fit"); setFitTick((v) => v + 1); }
-      if (e.key === "1") { e.preventDefault(); setZoomPreset(0.25); }
-      if (e.key === "2") { e.preventDefault(); setZoomPreset(0.5); }
-      if (e.key === "3") { e.preventDefault(); setZoomPreset(0.75); }
-      if (e.key === "4") { e.preventDefault(); setZoomPreset(1); }
-      if (e.key.toLowerCase() === "e") { e.preventDefault(); setIsEdit((v) => !v); }
+      if (renderEngine === "flow") {
+        if (e.key === "0") { e.preventDefault(); setZoomPreset("fit"); setFitTick((v) => v + 1); }
+        if (e.key === "1") { e.preventDefault(); setZoomPreset(0.25); }
+        if (e.key === "2") { e.preventDefault(); setZoomPreset(0.5); }
+        if (e.key === "3") { e.preventDefault(); setZoomPreset(0.75); }
+        if (e.key === "4") { e.preventDefault(); setZoomPreset(1); }
+        if (e.key.toLowerCase() === "e") { e.preventDefault(); setIsEdit((v) => !v); }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onBack, onSave, exportPdf]);
+  }, [onBack, exportPdf, handleSave, renderEngine]);
 
   useEffect(() => {
     const first = modalRef.current?.querySelector("button");
@@ -498,42 +838,142 @@ const VisualSchema = ({ schema, onBack, onSave }: VisualSchemaProps) => {
 
   return (
     <div ref={modalRef} className="fixed inset-0 z-50 bg-white flex flex-col" role="dialog" aria-modal="true" aria-labelledby="schema-title">
-      <div className="border-b border-slate-200 px-4 py-3 flex flex-col gap-2">
+      <div className={`border-b border-slate-200 px-4 py-3 flex flex-col gap-2 ${isPrintMode ? "hidden" : ""}`}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full" aria-label="Volver"><ArrowLeft size={20} className="text-slate-600" /></button>
             <div>
               <h2 id="schema-title" className="font-bold text-slate-800">{title}</h2>
-              <span className="text-[10px] text-indigo-700 font-black uppercase tracking-widest">Vista previa A4 210x297mm</span>
+              {isPrintMode && <span className="text-[10px] text-indigo-700 font-black uppercase tracking-widest">Vista previa A4 210x297mm</span>}
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={exportPdf} disabled={exporting} className="p-2 rounded-lg hover:bg-slate-100 text-slate-700"><Download size={20} /></button>
-            <button onClick={() => { const v = flowRef.current?.get(); if (v) onSave(v.nodes, v.edges); }} className="bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold"><Save size={14} className="inline mr-1" />Guardar</button>
+            <button onClick={handleSave} className="bg-indigo-700 text-white px-4 py-2 rounded-lg text-xs font-bold"><Save size={14} className="inline mr-1" />Guardar</button>
+            <button onClick={() => setIsPrintMode((v) => !v)} className={`px-3 py-2 rounded-lg text-xs font-semibold ${isPrintMode ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+              {isPrintMode ? "Modo Edición" : "Modo Impresión A4"}
+            </button>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
-          <div className="bg-slate-100 rounded-xl border p-1 flex gap-1"><button className={`w-8 h-8 rounded-lg ${layoutType === "jerarquico" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("jerarquico")}>V</button><button className={`w-8 h-8 rounded-lg ${layoutType === "lineal" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("lineal")}>H</button><button className={`w-8 h-8 rounded-lg ${layoutType === "radial" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("radial")}>R</button></div>
-          <div className="bg-slate-100 rounded-xl border p-1 flex gap-1">{([0.25, 0.5, 0.75, 1] as const).map((z) => <button key={z} onClick={() => setZoomPreset(z)} className={`px-2 h-8 rounded-lg ${zoomPreset === z ? "bg-white text-indigo-700" : ""}`}>{Math.round(z * 100)}%</button>)}<button onClick={() => { setZoomPreset("fit"); setFitTick((v) => v + 1); }} className={`px-2 h-8 rounded-lg ${zoomPreset === "fit" ? "bg-white text-indigo-700" : ""}`}>Ajustar ventana</button></div>
-          <div className="bg-slate-100 rounded-xl border p-1 flex gap-1"><button onClick={() => { setOrientationMode("auto"); const n = flowRef.current?.get().nodes || []; setOrientation(bestOrientation(n)); setFitTick((v) => v + 1); }} className={`px-2 h-8 rounded-lg ${orientationMode === "auto" ? "bg-white text-indigo-700" : ""}`}>Auto</button><button onClick={() => { setOrientationMode("manual"); setOrientation("vertical"); setFitTick((v) => v + 1); }} className={`w-8 h-8 rounded-lg ${orientation === "vertical" ? "bg-white text-indigo-700" : ""}`}><LayoutPanelTop size={14} /></button><button onClick={() => { setOrientationMode("manual"); setOrientation("horizontal"); setFitTick((v) => v + 1); }} className={`w-8 h-8 rounded-lg ${orientation === "horizontal" ? "bg-white text-indigo-700" : ""}`}><Move size={14} /></button></div>
-          <div className="bg-slate-100 rounded-xl p-1 flex gap-1"><button onClick={() => setIsEdit(false)} className={`px-3 py-1.5 rounded-lg ${!isEdit ? "bg-white text-indigo-700" : ""}`}><BookOpen size={14} className="inline mr-1" />Estudiar</button><button onClick={() => setIsEdit(true)} className={`px-3 py-1.5 rounded-lg ${isEdit ? "bg-white text-indigo-700" : ""}`}><Edit2 size={14} className="inline mr-1" />Editar</button></div>
-          <span className="text-slate-500">Atajos: Ctrl/Cmd + [1..4,0,E,S,P]</span>
+          <div className="bg-slate-100 rounded-xl p-1 flex gap-1">
+            <button onClick={() => setRenderEngine("mermaid")} className={`px-3 py-1.5 rounded-lg ${renderEngine === "mermaid" ? "bg-white text-indigo-700" : ""}`}>Mermaid</button>
+            <button onClick={() => setRenderEngine("flow")} className={`px-3 py-1.5 rounded-lg ${renderEngine === "flow" ? "bg-white text-indigo-700" : ""}`}>Flow</button>
+          </div>
+          {renderEngine === "flow" && (
+            <>
+              <div className="bg-slate-100 rounded-xl border p-1 flex gap-1"><button className={`w-8 h-8 rounded-lg ${layoutType === "jerarquico" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("jerarquico")}>V</button><button className={`w-8 h-8 rounded-lg ${layoutType === "lineal" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("lineal")}>H</button><button className={`w-8 h-8 rounded-lg ${layoutType === "radial" ? "bg-white text-indigo-700" : ""}`} onClick={() => setLayoutType("radial")}>R</button></div>
+              <div className="bg-slate-100 rounded-xl border p-1 flex gap-1">{([0.25, 0.5, 0.75, 1] as const).map((z) => <button key={z} onClick={() => setZoomPreset(z)} className={`px-2 h-8 rounded-lg ${zoomPreset === z ? "bg-white text-indigo-700" : ""}`}>{Math.round(z * 100)}%</button>)}<button onClick={() => { setZoomPreset("fit"); setFitTick((v) => v + 1); }} className={`px-2 h-8 rounded-lg ${zoomPreset === "fit" ? "bg-white text-indigo-700" : ""}`}>Ajustar ventana</button></div>
+              <div className="bg-slate-100 rounded-xl p-1 flex gap-1"><button onClick={() => setIsEdit(false)} className={`px-3 py-1.5 rounded-lg ${!isEdit ? "bg-white text-indigo-700" : ""}`}><BookOpen size={14} className="inline mr-1" />Estudiar</button><button onClick={() => setIsEdit(true)} className={`px-3 py-1.5 rounded-lg ${isEdit ? "bg-white text-indigo-700" : ""}`}><Edit2 size={14} className="inline mr-1" />Editar</button></div>
+            </>
+          )}
+          <div className="bg-slate-100 rounded-xl border p-1 flex gap-1"><button onClick={() => { if (renderEngine === "flow") { setOrientationMode("auto"); const n = flowRef.current?.get().nodes || []; setOrientation(bestOrientation(n)); } setFitTick((v) => v + 1); }} className={`px-2 h-8 rounded-lg ${orientationMode === "auto" && renderEngine === "flow" ? "bg-white text-indigo-700" : ""}`}>Auto</button><button onClick={() => { setOrientationMode("manual"); setOrientation("vertical"); setFitTick((v) => v + 1); }} className={`w-8 h-8 rounded-lg ${orientation === "vertical" ? "bg-white text-indigo-700" : ""}`}><LayoutPanelTop size={14} /></button><button onClick={() => { setOrientationMode("manual"); setOrientation("horizontal"); setFitTick((v) => v + 1); }} className={`w-8 h-8 rounded-lg ${orientation === "horizontal" ? "bg-white text-indigo-700" : ""}`}><Move size={14} /></button></div>
+          {renderEngine === "mermaid" && (
+            <button onClick={() => setIsMermaidLabelEditorOpen((v) => !v)} className="bg-slate-100 border border-slate-200 rounded-xl px-3 py-1.5 font-semibold text-slate-700 hover:bg-white">
+              Editar etiquetas
+            </button>
+          )}
+          {renderEngine === "mermaid" && (
+            <div className="bg-slate-100 rounded-xl border p-1 flex gap-1">
+              <button
+                onClick={zoomMermaidOut}
+                className="w-8 h-8 rounded-lg bg-white text-indigo-700 hover:bg-indigo-50"
+                aria-label="Zoom menos"
+                title="Zoom menos"
+              >
+                <ZoomOut size={14} className="mx-auto" />
+              </button>
+              <button
+                onClick={zoomMermaidIn}
+                className="w-8 h-8 rounded-lg bg-white text-indigo-700 hover:bg-indigo-50"
+                aria-label="Zoom mas"
+                title="Zoom mas"
+              >
+                <ZoomIn size={14} className="mx-auto" />
+              </button>
+              <button onClick={() => setMermaidDiagramType("flowchart")} className={`px-3 py-1.5 rounded-lg ${mermaidDiagramType === "flowchart" ? "bg-white text-indigo-700" : ""}`}>Flowchart</button>
+              <button onClick={() => setMermaidDiagramType("mindmap")} className={`px-3 py-1.5 rounded-lg ${mermaidDiagramType === "mindmap" ? "bg-white text-indigo-700" : ""}`}>Mindmap</button>
+              <button onClick={handleMermaidA4Fit} className="px-3 py-1.5 rounded-lg bg-white text-indigo-700 font-semibold">A4</button>
+              <button onClick={exportMermaidSvg} className="px-3 py-1.5 rounded-lg bg-white text-indigo-700 font-semibold">SVG</button>
+              <button onClick={exportMermaidPng} className="px-3 py-1.5 rounded-lg bg-white text-indigo-700 font-semibold">PNG</button>
+            </div>
+          )}
+          {renderEngine === "mermaid" && (
+            <div className="bg-slate-100 rounded-xl border p-1 flex items-center gap-1">
+              <select value={mermaidTheme} onChange={(e) => setMermaidTheme(e.target.value as MermaidTheme)} className="h-8 px-2 rounded-lg text-xs font-semibold bg-white border border-slate-200">
+                <option value="default">Tema: Default</option>
+                <option value="neutral">Tema: Neutral</option>
+                <option value="forest">Tema: Forest</option>
+                <option value="dark">Tema: Dark</option>
+              </select>
+              <select value={mermaidCurve} onChange={(e) => setMermaidCurve(e.target.value as MermaidCurve)} className="h-8 px-2 rounded-lg text-xs font-semibold bg-white border border-slate-200">
+                <option value="basis">Curva: Basis</option>
+                <option value="linear">Curva: Linear</option>
+                <option value="monotoneX">Curva: Monotone</option>
+                <option value="stepBefore">Curva: Step Before</option>
+                <option value="stepAfter">Curva: Step After</option>
+              </select>
+              <label className="text-[10px] font-semibold text-slate-600 px-1">N</label>
+              <input type="range" min={20} max={120} step={5} value={mermaidNodeSpacing} onChange={(e) => setMermaidNodeSpacing(Number(e.target.value))} />
+              <label className="text-[10px] font-semibold text-slate-600 px-1">R</label>
+              <input type="range" min={30} max={180} step={5} value={mermaidRankSpacing} onChange={(e) => setMermaidRankSpacing(Number(e.target.value))} />
+            </div>
+          )}
+          <span className="text-slate-500">{renderEngine === "flow" ? "Atajos: Ctrl/Cmd + [1..4,0,E,S,P]" : "Atajos: Ctrl/Cmd + [S,P]"}</span>
         </div>
       </div>
 
-      <div ref={viewportRef} className="flex-1 bg-slate-200 overflow-auto flex items-center justify-center p-3">
-        <div style={{ transform: `scale(${viewportScale})`, transformOrigin: "center center", transition: "transform .18s ease-out" }}>
-          <div ref={exportRef} className="relative bg-white shadow-2xl border border-slate-300 overflow-hidden" style={{ width: sheet.width, height: sheet.height }}>
-            <div className="pointer-events-none absolute border-2 border-dashed border-rose-300" style={{ left: MARGIN_PX, right: MARGIN_PX, top: MARGIN_PX, bottom: MARGIN_PX }} />
-            <div className="pointer-events-none absolute top-2 right-2 text-[10px] font-bold text-rose-500 bg-white/80 px-2 py-1 rounded-md">Margen impresion 10mm</div>
-            <ReactFlowProvider>
-              <FlowCanvas ref={flowRef} schema={schema} layoutType={layoutType} isEdit={isEdit} zoomPreset={zoomPreset} fitTick={fitTick} onNodesReady={onNodesReady} />
-            </ReactFlowProvider>
+      <div ref={viewportRef} onWheel={handleViewportWheel} className={`flex-1 overflow-auto flex items-center justify-center p-3 ${isPrintMode ? "bg-white" : "bg-slate-200"}`}>
+        <div style={{ transform: isPrintMode ? `scale(${effectiveScale})` : "none", transformOrigin: "center center", transition: "transform .18s ease-out", width: isPrintMode ? "auto" : "100%", height: isPrintMode ? "auto" : "100%" }}>
+          <div 
+            ref={exportRef} 
+            className={`relative bg-white ${isPrintMode ? "shadow-2xl border border-slate-300" : "w-full h-full"} overflow-hidden`} 
+            style={isPrintMode ? { width: sheet.width, height: sheet.height } : { width: "100%", height: "100%" }}
+          >
+            {isPrintMode && <div className="pointer-events-none absolute border-2 border-dashed border-rose-300" style={{ left: MARGIN_PX, right: MARGIN_PX, top: MARGIN_PX, bottom: MARGIN_PX }} />}
+            {isPrintMode && <div className="pointer-events-none absolute top-2 right-2 text-[10px] font-bold text-rose-500 bg-white/80 px-2 py-1 rounded-md">Margen impresion 10mm</div>}
+            {renderEngine === "mermaid" ? (
+              <MermaidCanvas
+                schema={schema}
+                orientation={orientation}
+                labelMap={mermaidLabelMap}
+                diagramType={mermaidDiagramType}
+                theme={mermaidTheme}
+                curve={mermaidCurve}
+                nodeSpacing={mermaidNodeSpacing}
+                rankSpacing={mermaidRankSpacing}
+                onSvgChange={setMermaidSvg}
+              />
+            ) : (
+              <ReactFlowProvider>
+                <FlowCanvas ref={flowRef} schema={schema} layoutType={layoutType} isEdit={isEdit} zoomPreset={zoomPreset} fitTick={fitTick} onNodesReady={onNodesReady} />
+              </ReactFlowProvider>
+            )}
+            {renderEngine === "mermaid" && isMermaidLabelEditorOpen && (
+              <div className="absolute left-3 top-3 z-20 w-[320px] max-h-[70%] overflow-auto bg-white/95 border border-slate-300 rounded-xl shadow-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700">Etiquetas Mermaid</h3>
+                  <button className="text-xs text-slate-600 hover:text-slate-900" onClick={() => setIsMermaidLabelEditorOpen(false)}>Cerrar</button>
+                </div>
+                <div className="space-y-2">
+                  {schemaNodesForMermaid().nodes.map((n) => (
+                    <div key={String(n.id)} className="flex flex-col gap-1">
+                      <label className="text-[10px] text-slate-500 font-semibold">Nodo {String(n.id)}</label>
+                      <input
+                        value={mermaidLabelMap[String(n.id)] ?? n.texto ?? ""}
+                        onChange={(e) => setMermaidLabelMap((prev) => ({ ...prev, [String(n.id)]: e.target.value }))}
+                        className="w-full h-8 px-2 rounded-md border border-slate-300 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      <div className="border-t border-slate-200 px-4 py-2 bg-slate-50 text-[11px] text-slate-600 flex flex-wrap items-center gap-3">
+      <div className={`border-t border-slate-200 px-4 py-2 bg-slate-50 text-[11px] text-slate-600 flex flex-wrap items-center gap-3 ${isPrintMode ? "hidden" : ""}`}>
         <span className="font-semibold">Flujo maximo 3 clics:</span><span>1) Modo</span><span>2) Click derecho nodo</span><span>3) Accion</span>
         <span className="inline-flex items-center gap-1 text-indigo-700 font-semibold"><Scan size={14} />Preview impresion A4 en tiempo real</span>
       </div>
@@ -542,3 +982,4 @@ const VisualSchema = ({ schema, onBack, onSave }: VisualSchemaProps) => {
 };
 
 export default VisualSchema;
+

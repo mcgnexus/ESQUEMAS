@@ -141,10 +141,10 @@ type StyleTheme = keyof typeof STYLE_THEMES;
 
 // Estilos por nivel con soporte de tema personalizado
 const LEVEL_STYLES = [
-  { bullet: 'bg-slate-800', text: 'text-slate-900', font: 'font-semibold' },
-  { bullet: 'bg-slate-700', text: 'text-slate-900', font: 'font-medium' },
-  { bullet: 'bg-slate-600', text: 'text-slate-800', font: 'font-normal' },
-  { bullet: 'bg-slate-500', text: 'text-slate-700', font: 'font-normal' },
+  { bullet: 'bg-[var(--level-1-bg)]', text: 'text-[var(--level-1-text)]', font: 'font-semibold' },
+  { bullet: 'bg-[var(--level-2-bg)]', text: 'text-[var(--level-2-text)]', font: 'font-medium' },
+  { bullet: 'bg-[var(--level-3-bg)]', text: 'text-[var(--level-3-text)]', font: 'font-normal' },
+  { bullet: 'bg-[var(--level-4-bg)]', text: 'text-[var(--level-4-text)]', font: 'font-normal' },
 ];
 
 // Componente de nodo simple - lista vertical con viñetas
@@ -507,6 +507,39 @@ const HomePage = () => {
       heightLeft -= contentHeight;
     }
     pdf.save(`esquema-${mindMap.label.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.pdf`);
+  }, [mindMap]);
+
+  const exportToSinglePagePDF = useCallback(async () => {
+    if (!mindMapRef.current || !mindMap) return;
+    const canvas = await domToCanvas(mindMapRef.current, {
+      scale: 3,
+      backgroundColor: "#ffffff",
+      width: mindMapRef.current.scrollWidth + 40,
+      height: mindMapRef.current.scrollHeight + 40,
+    });
+    const imgData = canvas.toDataURL("image/png");
+    
+    // Detectar orientación óptima basada en el contenido
+    const canvasRatio = canvas.width / canvas.height;
+    const orientation = canvasRatio > 1.1 ? "l" : "p";
+    
+    const pdf = new jsPDF(orientation, "mm", "a4");
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 15; // 15mm de margen
+    const contentWidth = pageWidth - margin * 2;
+    const contentHeight = pageHeight - margin * 2;
+    
+    // Calcular escala para ajustar todo el contenido en una página (contain)
+    const scaleFactor = Math.min(contentWidth / canvas.width, contentHeight / canvas.height);
+    const finalWidth = canvas.width * scaleFactor;
+    const finalHeight = canvas.height * scaleFactor;
+    
+    const x = margin + (contentWidth - finalWidth) / 2;
+    const y = margin + (contentHeight - finalHeight) / 2;
+    
+    pdf.addImage(imgData, "PNG", x, y, finalWidth, finalHeight);
+    pdf.save(`esquema-a4-${mindMap.label.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}.pdf`);
   }, [mindMap]);
 
   // --- Guardar esquema: Supabase primero, fallback local ---
@@ -1293,6 +1326,14 @@ const HomePage = () => {
                         >
                           <FileText size={16} className="text-indigo-600" />
                           <span>PDF</span>
+                        </button>
+                        <button
+                          onClick={() => { exportToSinglePagePDF(); setShowExportMenu(false); }}
+                          className="w-full px-4 py-3 text-left text-sm text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-indigo-500 outline-none"
+                          role="menuitem"
+                        >
+                          <FileText size={16} className="text-indigo-600" />
+                          <span>PDF (Ajustar a A4)</span>
                         </button>
                         <button
                           onClick={() => { exportToPNG(); setShowExportMenu(false); }}
