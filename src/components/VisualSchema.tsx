@@ -483,9 +483,7 @@ const MermaidCanvas = ({
     const escapeMindmap = (v: string) =>
       v
         .replace(/\n/g, " ")
-        .replace(/"/g, "'")
-        .replace(/\[/g, "(")
-        .replace(/\]/g, ")")
+        .replace(/"/g, '\\"')
         .replace(/\s+/g, " ")
         .trim();
     const idMap = new Map<string, string>();
