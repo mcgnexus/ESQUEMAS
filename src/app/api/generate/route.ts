@@ -86,7 +86,7 @@ const callGeminiWithRetries = async (prompt: string, images: ImageData[]) => {
     throw new Error("API key not found. Please set the GEMINI_API_KEY environment variable.");
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
 
   // Construir parts con el prompt y todas las imágenes
   const parts: GeminiPart[] = [{ text: prompt }];
